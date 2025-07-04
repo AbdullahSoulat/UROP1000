@@ -148,16 +148,9 @@ def squad_integral_approximation_simpson(p_func, a, b, num_simpson_intervals):
         log1 = quat_log(quat_multiply(q_curr_inv, q_prev_adj))
         log2 = quat_log(quat_multiply(q_curr_inv, q_next_adj))
 
-        # Sum the logarithms
         sumLogs = log1 + log2 # Quaternion addition is just vector addition
-
-        # Scale the sum by -0.25 (as per SQUAD formula)
         scaledSumLogs = -0.25 * sumLogs
-
-        # Exponentiate the scaled sum
         expResult = quat_exp(scaledSumLogs)
-
-        # Final control point calculation: q_curr * exp(...)
         return quat_multiply(q_curr, expResult)
 
     # The SQUAD function itself, which will be the function we integrate
@@ -201,7 +194,7 @@ def squad_integral_approximation_simpson(p_func, a, b, num_simpson_intervals):
 
     # 1. Define the time points for Simpson's Rule
     t_simpson_points = np.linspace(a, b, num_simpson_intervals + 1)
-    h = (b - a) / num_simpson_intervals # Step size for Simpson's rule
+    h = (b - a) / num_simpson_intervals 
 
     # 2. Sample the function p_func at these points to get initial keyframe quaternions
     # These keyframes will be used to define the SQUAD curve.
@@ -271,7 +264,6 @@ if __name__ == "__main__":
     start_interval = 0
     end_interval = np.pi / 2
 
-    # The analytical integral of this function from 0 to pi/2 is [1/3, -1/3, 1].
     exact_integral = np.array([1.0/3.0, -1.0/3.0, 1.0])
 
     # Format and print the header

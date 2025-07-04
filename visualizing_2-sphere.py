@@ -4,7 +4,6 @@ from mpl_toolkits.mplot3d import Axes3D
 
 # Define SLERP function
 def slerp(p, q, u):
-    """Spherical linear interpolation between points p and q on S^2 at parameter u in [0,1]."""
     p = np.array(p)
     q = np.array(q)
     dot = np.dot(p, q)
@@ -17,7 +16,6 @@ def slerp(p, q, u):
 
 # Sample function f: R -> S^2
 def f(t):
-    """Example: a curve on S^2, e.g., a spiral or great circle arc."""
     return np.array([np.cos(t) * np.cos(2*t), np.sin(t) * np.cos(2*t), np.sin(2*t)])
 
 # Generate points for the sphere surface
@@ -31,7 +29,7 @@ def generate_sphere_surface():
     return x, y, z
 
 # Generate points for the curve and SLERP segments
-def generate_curve_and_slerp(f, a, b, n, slerp_points=10):
+def generate_curve_and_slerp(f, a, b, n, slerp_points=5):
     t = np.linspace(a, b, n+1)  # Grid points
     points = [f(ti) for ti in t]
     slerp_curves = []
