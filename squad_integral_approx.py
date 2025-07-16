@@ -1,221 +1,202 @@
 import time
-from quaternion_algebra import *
+import numpy as np
+import quaternion_algebra as qa # Assuming quaternion_algebra.py is in the same directory
 
-def slerp(q_a, q_b, tau):
-    """Performs Spherical Linear Interpolation between two quaternions."""
-    # Ensure inputs are unit quaternions
-    q_a = q_a / np.linalg.norm(q_a)
-    q_b = q_b / np.linalg.norm(q_b)
+# A tolerance for floating point comparisons
+TOLERANCE = 1e-8
 
-    # Calculate the dot product (cosine of the angle between them)
-    dot = np.dot(q_a, q_b)
-
-    # If the dot product is negative, the quaternions are more than 90 degrees
-    # apart. slerp won't take the shorter path. So we flip one of the quaternions.
-    if dot < 0.0:
-        q_b = -q_b
-        dot = -dot
-
-    # If the quaternions are very close, use linear interpolation to avoid
-    # division by zero issues.
-    if dot > 1.0 - TOLERANCE:
-        result = q_a + tau * (q_b - q_a)
-        return result / np.linalg.norm(result)
-
-    theta_0 = np.arccos(dot)        # Angle between input quaternions
-    theta = theta_0 * tau           # Angle for the result
-    sin_theta = np.sin(theta)       # Computed now to avoid computing it twice
-    sin_theta_0 = np.sin(theta_0)   # Computed now to avoid computing it twice
-
-    s0 = np.cos(theta) - dot * sin_theta / sin_theta_0
-    s1 = sin_theta / sin_theta_0
-
-    return (s0 * q_a) + (s1 * q_b)
-
-
-def squad_integral_approximation_simpson(p_func, a, b, num_simpson_intervals):
+def slerp(q0, q1, t):
     """
-    Approximates the integral of a sphere-valued function using SQUAD and Simpson's Rule.
+    Performs Spherical Linear Interpolation (SLERP) between two unit quaternions.
 
     Args:
-        p_func (function): A function p(t) that returns a 3D numpy array on the unit sphere.
+        q0 (np.array): The starting unit quaternion.
+        q1 (np.array): The ending unit quaternion.
+        t (float): The interpolation parameter, typically between 0 and 1.
+
+    Returns:
+        np.array: The interpolated unit quaternion.
+    """
+    # Ensure quaternions are unit quaternions
+    q0 = q0 / np.linalg.norm(q0)
+    q1 = q1 / np.linalg.norm(q1)
+
+    # Ensure shortest path by making dot product positive
+    dot_product = np.dot(q0, q1)
+    if dot_product < 0.0:
+        q1 = -q1
+        dot_product = -dot_product
+
+    # Clamp dot product to avoid domain errors for arccos due to floating point inaccuracies
+    dot_product = np.clip(dot_product, -1.0, 1.0)
+
+    theta = np.arccos(dot_product)
+
+    if abs(theta) < TOLERANCE:
+        # If the angle is very small, q0 and q1 are almost identical,
+        # so just return q0 (or q1) to avoid division by zero.
+        return q0
+    
+    sin_theta = np.sin(theta)
+    
+    # Handle the case where sin_theta is very small (theta close to 0 or pi)
+    if abs(sin_theta) < TOLERANCE:
+        # If theta is close to 0, return q0. If theta is close to pi,
+        # it's an antipodal case, and linear interpolation is often used
+        # as SLERP becomes ill-defined. For simplicity here, we return q0.
+        return q0
+
+    # SLERP formula
+    return (q0 * np.sin((1 - t) * theta) + q1 * np.sin(t * theta)) / sin_theta
+
+
+def generate_intermediate_squad_quaternion(q_prev, q_curr, q_next):
+    """
+    Generates an intermediate control quaternion (s_i) for SQUAD interpolation,
+    also known as a "squad tangent" or "squad point".
+
+    This function calculates the quaternion `s_i` such that the curve passes smoothly
+    through `q_curr` while taking into account `q_prev` and `q_next`.
+
+    The formula used is:
+    s_i = q_i * exp(-1/4 * (log(q_i_inv * q_i_plus_1) + log(q_i_inv * q_i_minus_1)))
+
+    Args:
+        q_prev (np.array): The previous quaternion (q_{i-1}).
+        q_curr (np.array): The current quaternion (q_i).
+        q_next (np.array): The next quaternion (q_{i+1}).
+
+    Returns:
+        np.array: The intermediate control quaternion s_i.
+    """
+    # Ensure quaternions are unit quaternions
+    q_prev = q_prev / np.linalg.norm(q_prev)
+    q_curr = q_curr / np.linalg.norm(q_curr)
+    q_next = q_next / np.linalg.norm(q_next)
+
+    # Calculate inverse of current quaternion
+    q_curr_inv = qa.quat_inverse(q_curr)
+
+    # Calculate log terms
+    log_term1 = qa.quat_log(qa.quat_multiply(q_curr_inv, q_next))
+    log_term2 = qa.quat_log(qa.quat_multiply(q_curr_inv, q_prev))
+
+    # Sum the log terms
+    log_sum = log_term1 + log_term2
+
+    # Multiply by -1/4 and take the exponential
+    exp_term = qa.quat_exp(-0.25 * log_sum)
+
+    # Multiply q_curr by the exponential term to get s_i
+    s_i = qa.quat_multiply(q_curr, exp_term)
+    
+    # Normalize s_i to ensure it's a unit quaternion
+    return s_i / np.linalg.norm(s_i)
+
+
+def squad(q0, q1, s0, s1, t):
+    """
+    Performs Spherical Cubic Interpolation (SQUAD) between two unit quaternions
+    q0 and q1, using intermediate control quaternions s0 and s1.
+
+    SQUAD is a double SLERP: SLERP(SLERP(q0, q1, t), SLERP(s0, s1, t), 2t(1-t)).
+
+    Args:
+        q0 (np.array): The starting unit quaternion (q_i).
+        q1 (np.array): The ending unit quaternion (q_{i+1}).
+        s0 (np.array): The intermediate control quaternion for q0 (s_i).
+        s1 (np.array): The intermediate control quaternion for q1 (s_{i+1}).
+        t (float): The interpolation parameter, typically between 0 and 1.
+
+    Returns:
+        np.array: The interpolated unit quaternion.
+    """
+    # First level of SLERP
+    slerp_q0_q1 = slerp(q0, q1, t)
+    slerp_s0_s1 = slerp(s0, s1, t)
+
+    # Second level of SLERP with the blending parameter 2t(1-t)
+    # This parameter ensures that the curve passes through q0 at t=0 and q1 at t=1
+    # with the correct tangents.
+    blending_param = 2 * t * (1 - t)
+    
+    return slerp(slerp_q0_q1, slerp_s0_s1, blending_param)
+
+def f(x):
+    return np.array([np.cos(x) * np.cos(2*x),
+                     np.sin(x) * np.cos(2*x),
+                     np.sin(2*x)])
+
+def squad_integral_approx(f, a, b, N):
+    """
+    Approximates the integral of a sphere-valued function using SQUAD interpolation and the trapezoidal rule.
+    Args:
+        f (function): A function f(t) that returns a 3D numpy array on the unit sphere.
         a (float): The start of the integration interval.
         b (float): The end of the integration interval.
-        num_simpson_intervals (int): The number of subintervals to use for Simpson's rule.
-                                     Must be an even number and at least 2.
-
+        N (int): The number of subintervals (keyframes) to use.
     Returns:
         numpy.ndarray: The 3D vector result of the integral approximation.
     """
-    if num_simpson_intervals < 2 or num_simpson_intervals % 2 != 0:
-        raise ValueError("Number of subintervals for Simpson's Rule must be an even number >= 2.")
+    # 1. Sample the function at N+1 points
+    t_points = np.linspace(a, b, N + 1)
+    q_keyframes = np.array([qa.vec_to_quat(f(t)) for t in t_points])
 
-    # Helper function to calculate a SQUAD control point.
-    # This is nested because its specific boundary handling for q_prev and q_next
-    # depends on the context of the q_keyframes array.
-    def calculateSquadControlPoint(q_prev, q_curr, q_next):
-        # Ensure shortest path for dot products before log to avoid issues with antipodal quaternions
-        q_prev_adj = q_prev
-        if np.dot(q_prev, q_curr) < 0:
-            q_prev_adj = -q_prev
-
-        q_next_adj = q_next
-        if np.dot(q_next, q_curr) < 0:
-            q_next_adj = -q_next
-
-        q_curr_inv = quat_inverse(q_curr) # q_curr^-1
-
-        # Calculate log(q_curr^-1 * q_prev) and log(q_curr^-1 * q_next)
-        log1 = quat_log(quat_multiply(q_curr_inv, q_prev_adj))
-        log2 = quat_log(quat_multiply(q_curr_inv, q_next_adj))
-
-        sumLogs = log1 + log2 # Quaternion addition is just vector addition
-        scaledSumLogs = -0.25 * sumLogs
-        expResult = quat_exp(scaledSumLogs)
-        return quat_multiply(q_curr, expResult)
-
-    # The SQUAD function itself, which will be the function we integrate
-    def get_squad_interpolated_point(q_keyframes, s_control_points, interval_idx, u):
-        """
-        Calculates a point on the SQUAD curve.
-        Args:
-            q_keyframes (np.ndarray): Array of keyframe quaternions.
-            s_control_points (np.ndarray): Array of SQUAD control point quaternions.
-            interval_idx (int): The index of the keyframe interval (0 to num_keyframes - 2).
-            u (float): Interpolation parameter within the interval [0, 1].
-        Returns:
-            np.ndarray: The 3D vector on the unit sphere corresponding to the interpolated quaternion.
-        """
-        q_i = q_keyframes[interval_idx]
-        q_i_plus_1 = q_keyframes[interval_idx + 1]
-        s_i = s_control_points[interval_idx]
-        s_i_plus_1 = s_control_points[interval_idx + 1]
-
-        # Ensure slerp takes the shortest path by negating if dot product is negative
-        # These adjustments are critical for correct SLERP behavior
-        q_i_plus_1_adj = q_i_plus_1
-        if np.dot(q_i_plus_1, q_i) < 0:
-            q_i_plus_1_adj = -q_i_plus_1
-
-        s_i_plus_1_adj = s_i_plus_1
-        if np.dot(s_i_plus_1, s_i) < 0:
-            s_i_plus_1_adj = -s_i_plus_1
-
-        # First SLERP: Interpolate between keyframes
-        slerp1 = slerp(q_i, q_i_plus_1_adj, u)
-        # Second SLERP: Interpolate between control points
-        slerp2 = slerp(s_i, s_i_plus_1_adj, u)
-
-        # Final SLERP: Blend the two slerps using a cubic blending factor (2u(1-u))
-        cubic_blend_factor = 2 * u * (1 - u)
-        interpolated_quat = slerp(slerp1, slerp2, cubic_blend_factor)
-
-        return quat_to_vec(interpolated_quat)
-
-
-    # 1. Define the time points for Simpson's Rule
-    t_simpson_points = np.linspace(a, b, num_simpson_intervals + 1)
-    h = (b - a) / num_simpson_intervals 
-
-    # 2. Sample the function p_func at these points to get initial keyframe quaternions
-    # These keyframes will be used to define the SQUAD curve.
-    q_keyframes = np.array([vec_to_quat(p_func(t)) for t in t_simpson_points])
-
-    # 3. Compute the control points s_i for the SQUAD curve
-    # The number of control points will be the same as keyframes.
+    # 2. Compute SQUAD control points for each keyframe
     s_control_points = np.zeros_like(q_keyframes)
-
-    # Calculate all control points upfront.
-    # Boundary conditions for first and last control points (common approximation):
-    # For q_0, use q_0 and q_1.
-    # For q_N, use q_{N-1} and q_N.
-    # This approach effectively "reflects" the first/last segment.
-    for i in range(q_keyframes.shape[0]):
-        q_prev, q_curr, q_next = None, None, None
+    for i in range(N + 1):
         if i == 0:
-            q_prev = q_keyframes[0] # Treat q_0 as if it was preceded by itself for tangent calculation
-            q_curr = q_keyframes[0]
-            q_next = q_keyframes[1]
-        elif i == q_keyframes.shape[0] - 1:
-            q_prev = q_keyframes[i - 1]
-            q_curr = q_keyframes[i]
-            q_next = q_keyframes[i] # Treat q_N as if it was followed by itself
+            # For the first keyframe, reflect the first segment
+            s_control_points[i] = generate_intermediate_squad_quaternion(q_keyframes[0], q_keyframes[0], q_keyframes[1])
+        elif i == N:
+            # For the last keyframe, reflect the last segment
+            s_control_points[i] = generate_intermediate_squad_quaternion(q_keyframes[N-1], q_keyframes[N], q_keyframes[N])
         else:
-            q_prev = q_keyframes[i - 1]
-            q_curr = q_keyframes[i]
-            q_next = q_keyframes[i + 1]
+            s_control_points[i] = generate_intermediate_squad_quaternion(q_keyframes[i-1], q_keyframes[i], q_keyframes[i+1])
 
-        s_control_points[i] = calculateSquadControlPoint(q_prev, q_curr, q_next)
-
-    # 4. Apply Simpson's Rule using the SQUAD-interpolated function values
-    total_integral_vector = np.zeros(3)
-
-    # Sum for Simpson's Rule
-    # Simpson's Rule formula: (h/3) * [f(x_0) + 4f(x_1) + 2f(x_2) + ... + 4f(x_{N-1}) + f(x_N)]
-    for i in range(num_simpson_intervals + 1):
-        # The function value at t_simpson_points[i] is simply the vector part of q_keyframes[i],
-        # since the SQUAD curve passes exactly through the keyframes.
-        func_val = quat_to_vec(q_keyframes[i])
-
-        if i == 0 or i == num_simpson_intervals:
-            # First and last points have a weight of 1
-            total_integral_vector += func_val
-        elif i % 2 == 1:
-            # Odd-indexed points have a weight of 4
-            total_integral_vector += 4 * func_val
-        else:
-            # Even-indexed points have a weight of 2
-            total_integral_vector += 2 * func_val
-
-    # Final scaling by h/3
-    return total_integral_vector * (h / 3.0)
-
-# --- Example Usage ---
-if __name__ == "__main__":
-    # Define the function p(t) that traces a curve on the unit sphere
-    def specific_curve(t):
-        # This vector is already a unit vector, so no normalization is needed.
-        return np.array([
-            np.cos(t) * np.cos(2*t),
-            np.sin(t) * np.cos(2*t),
-            np.sin(2*t)
-        ])
-
-    # Define integration parameters
-    start_interval = 0
-    end_interval = np.pi / 2
-
-    exact_integral = np.array([1.0/3.0, -1.0/3.0, 1.0])
-
-    # Format and print the header
-    exact_str = np.array2string(exact_integral, precision=8, separator=' ', suppress_small=True)
-    print(f"Exact Integral: {exact_str.replace('[', '[ ').replace(']', ' ]')}")
-    print("-" * 70)
-
-    # Loop through different numbers of intervals (N must be even for Simpson's rule)
-    # Start from 2 intervals (2**1) up to 1024 (2**10)
-    for i in range(1, 11): # N = 2, 4, 8, ..., 1024
-        num_intervals = 2**i
-        
-        start_time = time.time()
-        try:
-            result_vector = squad_integral_approximation_simpson(
-                p_func=specific_curve,
-                a=start_interval,
-                b=end_interval,
-                num_simpson_intervals=num_intervals
+    # 3. Integrate over each interval using SQUAD and the trapezoidal rule
+    total_integral = np.zeros(3)
+    # sub_intervals = max(1000, N * 50)  # Fine sampling for accuracy
+    sub_intervals = 100
+    for i in range(N):
+        t0 = t_points[i]
+        t1 = t_points[i+1]
+        delta_t = (t1 - t0) / sub_intervals
+        interval_integral = np.zeros(3)
+        for j in range(sub_intervals + 1):
+            u = j / sub_intervals  # u in [0, 1]
+            quat_interp = squad(
+                q_keyframes[i], q_keyframes[i+1],
+                s_control_points[i], s_control_points[i+1],
+                u
             )
 
-            end_time = time.time()
-            elapsed_time = end_time - start_time
+            # print(quat_interp) # printing for debugging
 
-            error = np.linalg.norm(result_vector - exact_integral)
+            vec_interp = qa.quat_to_vec(quat_interp)
+            # Trapezoidal rule weights
+            weight = 1.0 if (j == 0 or j == sub_intervals) else 2.0
+            interval_integral += weight * vec_interp
+        interval_integral *= delta_t / 2 
+        total_integral += interval_integral
+    return total_integral
 
-            # Format the output string to match the request as closely as possible
-            approx_str = np.array2string(result_vector, precision=8, separator=' ', suppress_small=True)
-            approx_str = approx_str.replace('[', '[ ').replace(']', ' ]')
 
-            print(f"N = {num_intervals:<4}: Approx = {approx_str}, Error = {error:.10f}, Time = {elapsed_time:.10f}")
+if __name__ == "__main__":
+    I_exact = np.array([1/3, -1/3, 1])
+    N_values = [1024]
+    results = []
 
-        except ValueError as e:
-            print(f"N = {num_intervals:<4}: Error - {e}")
+    for N in N_values:
+        start_time = time.time()
+        I_approx = squad_integral_approx(f, 0, np.pi/2, N)
+        end_time = time.time()
+        elapsed_time = end_time - start_time
+
+        error = np.linalg.norm(I_approx - I_exact)
+        results.append({'N': N, 'Approx_Integral': I_approx, 'Error': error, 'Time': elapsed_time})
+
+    print(f"Exact Integral: {I_exact}")
+    print("-" * 50)
+    for res in results:
+        print(f"N = {res['N']:<4}: Approx = {res['Approx_Integral']}, Error = {res['Error']:.10f}, Time = {res['Time']:.10f}")

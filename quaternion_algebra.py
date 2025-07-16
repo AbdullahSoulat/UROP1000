@@ -3,14 +3,31 @@ import numpy as np
 TOLERANCE = 1e-8
 
 def vec_to_quat(v):
-    """Converts a 3D vector to a pure unit quaternion."""
-    q = np.zeros(4)
-    q[1:] = v
-    return q
+    # v: 3D unit vector
+    north = np.array([0.0, 0.0, 1.0])
+    if np.allclose(v, north):
+        return np.array([1.0, 0.0, 0.0, 0.0])  # Identity quaternion
+    if np.allclose(v, -north):
+        return np.array([0.0, 1.0, 0.0, 0.0])  # 180 deg about x axis
+    axis = np.cross(north, v)
+    axis = axis / np.linalg.norm(axis)
+    angle = np.arccos(np.clip(np.dot(north, v), -1.0, 1.0))
+    half_angle = angle / 2
+    w = np.cos(half_angle)
+    xyz = axis * np.sin(half_angle)
+    return np.concatenate(([w], xyz))
 
 def quat_to_vec(q):
-    """Extracts the vector part of a quaternion."""
-    return q[1:]
+    # q: quaternion as [w, x, y, z]
+    # Rotate north pole by q
+    north = np.array([0.0, 0.0, 1.0])
+    # Convert north to pure quaternion
+    v_quat = np.concatenate(([0.0], north))
+    # q * v_quat * q_conjugate
+    q_conj = np.array([q[0], -q[1], -q[2], -q[3]])
+    temp = quat_multiply(q, v_quat)
+    rotated = quat_multiply(temp, q_conj)
+    return rotated[1:]  # Return the vector part
 
 def quat_multiply(q1, q2):
     """Multiplies two quaternions."""
@@ -23,9 +40,15 @@ def quat_multiply(q1, q2):
     return np.array([w, x, y, z])
 
 def quat_inverse(q):
-    """Calculates the inverse of a quaternion."""
-    # For a unit quaternion, the inverse is its conjugate
-    return np.array([q[0], -q[1], -q[2], -q[3]])
+    """
+    Calculates the inverse of a quaternion q = [w, x, y, z].
+    For any quaternion, the inverse is the conjugate divided by the squared norm.
+    """
+    q_conj = np.array([q[0], -q[1], -q[2], -q[3]])
+    norm_sq = np.dot(q, q)
+    if norm_sq < TOLERANCE:
+        raise ZeroDivisionError("Cannot invert a quaternion with near-zero norm.")
+    return q_conj / norm_sq
 
 def quat_log(q):
     """Calculates the natural logarithm of a unit quaternion."""
@@ -54,28 +77,23 @@ def quat_log(q):
     v = q[1:] / v_norm
     theta = np.arccos(np.clip(q[0], -1.0, 1.0)) # Clip to avoid domain errors for arccos
 
-    return vec_to_quat(v * theta)
+    return np.concatenate(([0.0], v * theta))
 
 def quat_exp(q):
-    """Calculates the exponential of a pure quaternion."""
-    # For a pure quaternion q = [0, v], exp(q) = [cos(|v|), (v/|v|)sin(|v|)]
-    if abs(q[0]) > TOLERANCE:
-        # If the real part is not zero, it's not a pure quaternion.
-        # For numerical stability, if it's very small, treat as zero.
-        if abs(q[0]) < TOLERANCE:
-            q[0] = 0.0
-        else:
-            raise ValueError(f"Input to quat_exp must be a pure quaternion (real part close to 0). Got: {q[0]}")
+    """
+    Calculates the exponential of a quaternion q = [a, u].
+    Returns exp(q) = exp(a) * [cos(|u|), (sin(|u|)/|u|) * u]
+    """
+    a = q[0]
+    u = q[1:]
+    u_norm = np.linalg.norm(u)
 
-    v = q[1:]
-    v_norm = np.linalg.norm(v)
+    exp_a = np.exp(a)
+    if u_norm < TOLERANCE:
+        return np.array([exp_a, 0.0, 0.0, 0.0])
 
-    if v_norm < TOLERANCE:
-        return np.array([1.0, 0.0, 0.0, 0.0])
-
-    w = np.cos(v_norm)
-    vec_part = (v / v_norm) * np.sin(v_norm)
-
-    return np.array([w, vec_part[0], vec_part[1], vec_part[2]])
+    w = exp_a * np.cos(u_norm)
+    xyz = exp_a * (np.sin(u_norm) / u_norm) * u
+    return np.concatenate(([w], xyz))
 
 
