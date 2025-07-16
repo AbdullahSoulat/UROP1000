@@ -174,17 +174,25 @@ def squad_integral_approx(f, a, b, N):
             # print(quat_interp) # printing for debugging
 
             vec_interp = qa.quat_to_vec(quat_interp)
-            # Trapezoidal rule weights
-            weight = 1.0 if (j == 0 or j == sub_intervals) else 2.0
-            interval_integral += weight * vec_interp
-        interval_integral *= delta_t / 2 
+            if j == 0 or j == sub_intervals:
+                interval_integral += vec_interp
+            elif j % 2 == 1:
+                interval_integral += 4 * vec_interp
+            else:
+                interval_integral += 2 * vec_interp
+            
+            # trapezoidal rule
+            # weight = 1.0 if (j == 0 or j == sub_intervals) else 2.0 
+            # interval_integral += weight * vec_interp
+        interval_integral *= delta_t / 3 
         total_integral += interval_integral
+
     return total_integral
 
 
 if __name__ == "__main__":
     I_exact = np.array([1/3, -1/3, 1])
-    N_values = [1024]
+    N_values = [2, 4, 8, 16, 32, 62, 128, 256, 512, 1024]
     results = []
 
     for N in N_values:
