@@ -20,9 +20,11 @@ def vec_to_quat(v):
 def quat_to_vec(q):
     # q: quaternion as [w, x, y, z]
     # Rotate north pole by q
-    north = np.array([0.0, 0.0, 1.0])
-    # Convert north to pure quaternion
-    v_quat = np.concatenate(([0.0], north))
+    # The vector part of a quaternion can be thought of as a rotation axis.
+    # To get a vector representation, we can rotate a basis vector (e.g., [0, 0, 1])
+    # by the quaternion.
+    v_basis = np.array([0.0, 0.0, 1.0])
+    v_quat = np.concatenate(([0.0], v_basis))
     # q * v_quat * q_conjugate
     q_conj = np.array([q[0], -q[1], -q[2], -q[3]])
     temp = quat_multiply(q, v_quat)

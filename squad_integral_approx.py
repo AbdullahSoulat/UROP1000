@@ -74,6 +74,12 @@ def generate_intermediate_squad_quaternion(q_prev, q_curr, q_next):
     q_curr = q_curr / np.linalg.norm(q_curr)
     q_next = q_next / np.linalg.norm(q_next)
 
+    # Ensure shortest path for neighboring quaternions
+    if np.dot(q_curr, q_prev) < 0:
+        q_prev = -q_prev
+    if np.dot(q_curr, q_next) < 0:
+        q_next = -q_next
+
     # Calculate inverse of current quaternion
     q_curr_inv = qa.quat_inverse(q_curr)
 
@@ -127,72 +133,115 @@ def f(x):
                      np.sin(x) * np.cos(2*x),
                      np.sin(2*x)])
 
+# def squad_integral_approx(f, a, b, N):
+#     """
+#     Approximates the integral of a sphere-valued function using SQUAD interpolation and the trapezoidal rule.
+#     Args:
+#         f (function): A function f(t) that returns a 3D numpy array on the unit sphere.
+#         a (float): The start of the integration interval.
+#         b (float): The end of the integration interval.
+#         N (int): The number of subintervals (keyframes) to use.
+#     Returns:
+#         numpy.ndarray: The 3D vector result of the integral approximation.
+#     """
+#     # 1. Sample the function at N+1 points
+#     t_points = np.linspace(a, b, N + 1)
+#     q_keyframes = np.array([qa.vec_to_quat(f(t)) for t in t_points])
+# 
+#     # 2. Compute SQUAD control points for each keyframe
+#     s_control_points = np.zeros_like(q_keyframes)
+#     for i in range(N + 1):
+#         if i == 0:
+#             # For the first keyframe, reflect the first segment
+#             s_control_points[i] = generate_intermediate_squad_quaternion(q_keyframes[0], q_keyframes[0], q_keyframes[1])
+#         elif i == N:
+#             # For the last keyframe, reflect the last segment
+#             s_control_points[i] = generate_intermediate_squad_quaternion(q_keyframes[N-1], q_keyframes[N], q_keyframes[N])
+#         else:
+#             s_control_points[i] = generate_intermediate_squad_quaternion(q_keyframes[i-1], q_keyframes[i], q_keyframes[i+1])
+# 
+#     # 3. Integrate over each interval using SQUAD and the trapezoidal rule
+#     total_integral = np.zeros(3)
+#     # sub_intervals = max(1000, N * 50)  # Fine sampling for accuracy
+#     sub_intervals = 100
+#     for i in range(N):
+#         t0 = t_points[i]
+#         t1 = t_points[i+1]
+#         delta_t = (t1 - t0) / sub_intervals
+#         interval_integral = np.zeros(3)
+#         for j in range(sub_intervals + 1):
+#             u = j / sub_intervals  # u in [0, 1]
+#             quat_interp = squad(
+#                 q_keyframes[i], q_keyframes[i+1],
+#                 s_control_points[i], s_control_points[i+1],
+#                 u
+#             )
+# 
+#             # print(quat_interp) # printing for debugging
+# 
+#             vec_interp = qa.quat_to_vec(quat_interp)
+# 
+#             # Simpsons rule
+#             # if j == 0 or j == sub_intervals:
+#             #     interval_integral += vec_interp
+#             # elif j % 2 == 1:
+#             #     interval_integral += 4 * vec_interp
+#             # else:
+#             #     interval_integral += 2 * vec_interp
+#             
+#             # trapezoidal rule
+#             weight = 1.0 if (j == 0 or j == sub_intervals) else 2.0 
+#             interval_integral += weight * vec_interp
+#         interval_integral *= delta_t / 2
+#         total_integral += interval_integral
+# 
+#     return total_integral
+
+
 def squad_integral_approx(f, a, b, N):
     """
-    Approximates the integral of a sphere-valued function using SQUAD interpolation and the trapezoidal rule.
-    Args:
-        f (function): A function f(t) that returns a 3D numpy array on the unit sphere.
-        a (float): The start of the integration interval.
-        b (float): The end of the integration interval.
-        N (int): The number of subintervals (keyframes) to use.
-    Returns:
-        numpy.ndarray: The 3D vector result of the integral approximation.
+    4th-order accurate integral approximation using SQUAD with proper endpoint handling.
     """
-    # 1. Sample the function at N+1 points
+    # Sample function with one extra point at each end for better boundary handling
     t_points = np.linspace(a, b, N + 1)
-    q_keyframes = np.array([qa.vec_to_quat(f(t)) for t in t_points])
-
-    # 2. Compute SQUAD control points for each keyframe
-    s_control_points = np.zeros_like(q_keyframes)
-    for i in range(N + 1):
-        if i == 0:
-            # For the first keyframe, reflect the first segment
-            s_control_points[i] = generate_intermediate_squad_quaternion(q_keyframes[0], q_keyframes[0], q_keyframes[1])
-        elif i == N:
-            # For the last keyframe, reflect the last segment
-            s_control_points[i] = generate_intermediate_squad_quaternion(q_keyframes[N-1], q_keyframes[N], q_keyframes[N])
-        else:
-            s_control_points[i] = generate_intermediate_squad_quaternion(q_keyframes[i-1], q_keyframes[i], q_keyframes[i+1])
-
-    # 3. Integrate over each interval using SQUAD and the trapezoidal rule
+    extended_t = np.concatenate(([a - (b-a)/N], t_points, [b + (b-a)/N]))
+    q_extended = np.array([qa.vec_to_quat(f(t)) for t in extended_t])
+    
+    # Compute control points using central differences everywhere
+    s_control_points = []
+    for i in range(1, len(q_extended)-1):
+        s_i = generate_intermediate_squad_quaternion(
+            q_extended[i-1], q_extended[i], q_extended[i+1])
+        s_control_points.append(s_i)
+    s_control_points = np.array(s_control_points)
+    
+    # Use 4th-order Simpson's rule adapted for SQUAD
     total_integral = np.zeros(3)
-    # sub_intervals = max(1000, N * 50)  # Fine sampling for accuracy
-    sub_intervals = 100
     for i in range(N):
         t0 = t_points[i]
         t1 = t_points[i+1]
-        delta_t = (t1 - t0) / sub_intervals
-        interval_integral = np.zeros(3)
-        for j in range(sub_intervals + 1):
-            u = j / sub_intervals  # u in [0, 1]
-            quat_interp = squad(
-                q_keyframes[i], q_keyframes[i+1],
-                s_control_points[i], s_control_points[i+1],
-                u
-            )
-
-            # print(quat_interp) # printing for debugging
-
-            vec_interp = qa.quat_to_vec(quat_interp)
-            if j == 0 or j == sub_intervals:
-                interval_integral += vec_interp
-            elif j % 2 == 1:
-                interval_integral += 4 * vec_interp
-            else:
-                interval_integral += 2 * vec_interp
-            
-            # trapezoidal rule
-            # weight = 1.0 if (j == 0 or j == sub_intervals) else 2.0 
-            # interval_integral += weight * vec_interp
-        interval_integral *= delta_t / 3 
-        total_integral += interval_integral
-
+        dt = t1 - t0
+        
+        # Sample at t0, midpoint, and t1
+        quat0 = q_extended[i+1]  # +1 because of extended array
+        quat1 = q_extended[i+2]
+        s0 = s_control_points[i]
+        s1 = s_control_points[i+1]
+        
+        # Evaluate at three Simpson points
+        vec0 = qa.quat_to_vec(squad(quat0, quat1, s0, s1, 0.0))
+        vec_mid = qa.quat_to_vec(squad(quat0, quat1, s0, s1, 0.5))
+        vec1 = qa.quat_to_vec(squad(quat0, quat1, s0, s1, 1.0))
+        
+        # Simpson's rule
+        total_integral += dt * (vec0 + 4*vec_mid + vec1) / 6
+    
     return total_integral
 
 
 if __name__ == "__main__":
     I_exact = np.array([1/3, -1/3, 1])
-    N_values = [2, 4, 8, 16, 32, 62, 128, 256, 512, 1024]
+    N_values = [1, 2, 4, 8, 16, 32, 62, 128, 256, 512, 1024]
     results = []
 
     for N in N_values:
@@ -208,3 +257,12 @@ if __name__ == "__main__":
     print("-" * 50)
     for res in results:
         print(f"N = {res['N']:<4}: Approx = {res['Approx_Integral']}, Error = {res['Error']:.10f}, Time = {res['Time']:.10f}")
+
+    errors = [res['Error'] for res in results]
+    Ns = [res['N'] for res in results]
+    log_errors = np.log(errors)
+    log_Ns = np.log(Ns)
+    
+    # Fit a line to find convergence order
+    coefficients = np.polyfit(log_Ns, log_errors, 1)
+    print(f"Convergence order: {-coefficients[0]}")
