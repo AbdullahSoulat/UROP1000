@@ -42,9 +42,9 @@ def generate_curve_and_slerp(f, a, b, n, slerp_points=5):
 # Plotting function
 def plot_sphere_and_curve():
     # Parameters
-    a, b = 0, np.pi  # Interval for t
+    a, b = 0, 4*np.pi  # Interval for t
     n = 10  # Number of subintervals for SLERP
-    slerp_points = 20  # Points per SLERP segment
+    slerp_points = 100  # Points per SLERP segment
 
     # Generate data
     x_sphere, y_sphere, z_sphere = generate_sphere_surface()
